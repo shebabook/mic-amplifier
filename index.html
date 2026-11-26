@@ -26,6 +26,7 @@
   button#toggle { font: inherit; font-size: 1.2rem; font-weight: 600; padding: 16px; border: 0; border-radius: 10px;
     background: var(--accent); color: var(--accent-fg); cursor: pointer; }
   button#toggle.on { background: var(--stop); color: #fff; }
+  button#toggle:disabled { opacity: .6; cursor: wait; }
   button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   label { display: flex; justify-content: space-between; font-weight: 600; }
   input[type=range] { width: 100%; height: 36px; accent-color: var(--accent); }
@@ -60,12 +61,26 @@
   var gainVal = document.getElementById('gainVal');
   var bar = document.getElementById('bar');
   var statusEl = document.getElementById('status');
-  var ctx = null, stream = null, gainNode = null, analyser = null, raf = 0, running = false;
+  var ctx = null, stream = null, gainNode = null, analyser = null, raf = 0;
+  var running = false, starting = false;
+
+  // ভলিউম মনে রাখা: পেজ রিলোড করলেও আগের ভলিউম থাকবে
+  try {
+    var saved = parseFloat(localStorage.getItem('mic-amp-gain'));
+    if (saved >= 1 && saved <= 15) slider.value = saved;
+  } catch (e) { /* প্রাইভেট মোডে localStorage নাও থাকতে পারে */ }
+  gainVal.textContent = parseFloat(slider.value).toFixed(1) + 'x';
+
+  function setGain(g) {
+    // হঠাৎ করে ভলিউম বদলালে ক্লিক/পট শব্দ হয়, তাই আস্তে আস্তে বদলানো হয়
+    if (gainNode) gainNode.gain.setTargetAtTime(g, ctx.currentTime, 0.03);
+  }
 
   slider.addEventListener('input', function () {
     var g = parseFloat(slider.value);
     gainVal.textContent = g.toFixed(1) + 'x';
-    if (gainNode) gainNode.gain.value = g;
+    try { localStorage.setItem('mic-amp-gain', g); } catch (e) {}
+    setGain(g);
   });
 
   function drawMeter() {
@@ -82,9 +97,30 @@
     raf = requestAnimationFrame(drawMeter);
   }
 
+  function micErrorMessage(e) {
+    var name = (e && e.name) || '';
+    if (name === 'NotAllowedError')
+      return 'মাইক্রোফোনের অনুমতি দেওয়া হয়নি। ব্রাউজারের অ্যাড্রেস বারের পাশের তালা/সেটিংস আইকনে গিয়ে মাইক্রোফোনের অনুমতি দিন, তারপর আবার চেষ্টা করুন।';
+    if (name === 'NotFoundError')
+      return 'কোনো মাইক্রোফোন পাওয়া যায়নি। হেডফোনের মাইক ঠিকমতো লাগানো আছে কি না দেখুন, অথবা ফোনের মাইক ব্যবহার করুন।';
+    if (name === 'NotReadableError')
+      return 'মাইক্রোফোন অন্য কোনো অ্যাপ ব্যবহার করছে। অন্য অ্যাপ বন্ধ করে আবার চেষ্টা করুন।';
+    if (name === 'SecurityError')
+      return 'নিরাপদ (https) পেজ ছাড়া মাইক চালু হয় না। লিংকটি https দিয়ে খুলুন।';
+    return 'মাইক্রোফোন চালু করা যায়নি। ব্রাউজারের সাইট সেটিংসে মাইক্রোফোনের অনুমতি দিন।';
+  }
+
   async function start() {
+    // দুবার চাপলেও যাতে দুটো মাইক/অডিও না খোলে
+    if (starting || running) return;
+    starting = true;
+    btn.disabled = true;
+    btn.textContent = 'চালু হচ্ছে…';
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       statusEl.textContent = 'এই ব্রাউজারে মাইক সাপোর্ট নেই, অথবা পেজটি https এ খোলা হয়নি।';
+      starting = false;
+      btn.disabled = false;
+      btn.textContent = 'শুরু করুন';
       return;
     }
     try {
@@ -92,12 +128,27 @@
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
       });
     } catch (e) {
-      statusEl.textContent = 'মাইক্রোফোনের অনুমতি পাওয়া যায়নি। ব্রাউজারের সাইট সেটিংসে অনুমতি দিন।';
+      statusEl.textContent = micErrorMessage(e);
+      starting = false;
+      btn.disabled = false;
+      btn.textContent = 'শুরু করুন';
       return;
     }
     var AC = window.AudioContext || window.webkitAudioContext;
     ctx = new AC({ latencyHint: 'interactive' });
     await ctx.resume();
+    if (ctx.state !== 'running') {
+      // ব্রাউজার অডিও আটকে রেখেছে: মাইক ছেড়ে দিয়ে জানানো হয়
+      stream.getTracks().forEach(function (t) { t.stop(); });
+      stream = null;
+      ctx.close();
+      ctx = null;
+      statusEl.textContent = 'অডিও চালু হয়নি — ব্রাউজার অডিও আটকে রেখেছে। পেজটি রিলোড করে আবার চেষ্টা করুন।';
+      starting = false;
+      btn.disabled = false;
+      btn.textContent = 'শুরু করুন';
+      return;
+    }
     var src = ctx.createMediaStreamSource(stream);
     gainNode = ctx.createGain();
     gainNode.gain.value = parseFloat(slider.value);
@@ -114,7 +165,18 @@
     src.connect(gainNode);
     gainNode.connect(limiter);
     limiter.connect(ctx.destination);
+    // মাঝপথে মাইক বন্ধ/খুলে গেলে নিজে থেকে থামবে
+    stream.getAudioTracks().forEach(function (track) {
+      track.onended = function () {
+        if (running) {
+          stop();
+          statusEl.textContent = 'মাইক্রোফোন বন্ধ হয়ে গেছে। আবার শুরু করুন।';
+        }
+      };
+    });
     running = true;
+    starting = false;
+    btn.disabled = false;
     btn.textContent = 'বন্ধ করুন';
     btn.classList.add('on');
     statusEl.textContent = 'চালু আছে। কথা বলুন।';
@@ -123,11 +185,13 @@
 
   function stop() {
     running = false;
+    starting = false;
     cancelAnimationFrame(raf);
     if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
     if (ctx) ctx.close();
     stream = null; ctx = null; gainNode = null; analyser = null;
     bar.style.width = '0';
+    btn.disabled = false;
     btn.textContent = 'শুরু করুন';
     btn.classList.remove('on');
     statusEl.textContent = 'বন্ধ আছে।';
