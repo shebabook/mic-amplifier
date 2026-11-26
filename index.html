@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>মাইক অ্যামপ্লিফায়ার</title>
+<style>
+  :root {
+    --bg: #f3f5f7; --fg: #14202b; --muted: #5b6b79; --card: #ffffff;
+    --line: #d5dce2; --accent: #0a7c66; --accent-fg: #ffffff; --stop: #c2392b;
+    --meter-bg: #e3e8ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #10171d; --fg: #e8eef3; --muted: #93a3b1; --card: #18222b;
+      --line: #2b3a46; --accent: #2fc4a4; --accent-fg: #06201a; --stop: #ef6b5b;
+      --meter-bg: #25323d; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Noto Sans Bengali", sans-serif;
+    min-height: 100vh; display: flex; justify-content: center; padding: 20px 16px; }
+  main { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 16px; }
+  h1 { font-size: 1.4rem; margin: 4px 0 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .warn { font-size: .9rem; color: var(--muted); line-height: 1.5; }
+  button#toggle { font: inherit; font-size: 1.2rem; font-weight: 600; padding: 16px; border: 0; border-radius: 10px;
+    background: var(--accent); color: var(--accent-fg); cursor: pointer; }
+  button#toggle.on { background: var(--stop); color: #fff; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  label { display: flex; justify-content: space-between; font-weight: 600; }
+  input[type=range] { width: 100%; height: 36px; accent-color: var(--accent); }
+  .meter { height: 14px; border-radius: 7px; background: var(--meter-bg); overflow: hidden; }
+  .meter > div { height: 100%; width: 0; background: var(--accent); transition: width .06s linear; }
+  .meter > div.hot { background: var(--stop); }
+  #status { font-size: .9rem; color: var(--muted); min-height: 1.3em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>মাইক অ্যামপ্লিফায়ার</h1>
+  <section class="card">
+    <button id="toggle" type="button">শুরু করুন</button>
+    <div id="status" role="status">হেডফোন লাগিয়ে শুরু করুন।</div>
+    <div>
+      <label for="gain"><span>ভলিউম</span><span id="gainVal">3.0x</span></label>
+      <input id="gain" type="range" min="1" max="15" step="0.5" value="3">
+    </div>
+    <div>
+      <label><span>ইনপুট লেভেল</span></label>
+      <div class="meter" aria-hidden="true"><div id="bar"></div></div>
+    </div>
+    <p class="warn">অবশ্যই হেডফোন বা ইয়ারফোন ব্যবহার করুন। স্পিকারে চালালে সাউন্ড আবার মাইকে ঢুকে তীব্র বিপ শব্দ (ফিডব্যাক) হবে। ব্লুটুথ হেডফোনে কিছুটা ডিলে হতে পারে।</p>
+  </section>
+</main>
+
+<script>
+(function () {
+  var btn = document.getElementById('toggle');
+  var slider = document.getElementById('gain');
+  var gainVal = document.getElementById('gainVal');
+  var bar = document.getElementById('bar');
+  var statusEl = document.getElementById('status');
+  var ctx = null, stream = null, gainNode = null, analyser = null, raf = 0, running = false;
+
+  slider.addEventListener('input', function () {
+    var g = parseFloat(slider.value);
+    gainVal.textContent = g.toFixed(1) + 'x';
+    if (gainNode) gainNode.gain.value = g;
+  });
+
+  function drawMeter() {
+    var data = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(data);
+    var peak = 0;
+    for (var i = 0; i < data.length; i++) {
+      var v = Math.abs(data[i] - 128) / 128;
+      if (v > peak) peak = v;
+    }
+    var level = Math.min(1, peak * parseFloat(slider.value));
+    bar.style.width = (level * 100) + '%';
+    bar.className = level > 0.9 ? 'hot' : '';
+    raf = requestAnimationFrame(drawMeter);
+  }
+
+  async function start() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      statusEl.textContent = 'এই ব্রাউজারে মাইক সাপোর্ট নেই, অথবা পেজটি https এ খোলা হয়নি।';
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
+      });
+    } catch (e) {
+      statusEl.textContent = 'মাইক্রোফোনের অনুমতি পাওয়া যায়নি। ব্রাউজারের সাইট সেটিংসে অনুমতি দিন।';
+      return;
+    }
+    var AC = window.AudioContext || window.webkitAudioContext;
+    ctx = new AC({ latencyHint: 'interactive' });
+    await ctx.resume();
+    var src = ctx.createMediaStreamSource(stream);
+    gainNode = ctx.createGain();
+    gainNode.gain.value = parseFloat(slider.value);
+    // limiter: বেশি গেইনে সাউন্ড ফাটা কমায়
+    var limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -6;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.003;
+    limiter.release.value = 0.1;
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    src.connect(analyser);
+    src.connect(gainNode);
+    gainNode.connect(limiter);
+    limiter.connect(ctx.destination);
+    running = true;
+    btn.textContent = 'বন্ধ করুন';
+    btn.classList.add('on');
+    statusEl.textContent = 'চালু আছে। কথা বলুন।';
+    drawMeter();
+  }
+
+  function stop() {
+    running = false;
+    cancelAnimationFrame(raf);
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    if (ctx) ctx.close();
+    stream = null; ctx = null; gainNode = null; analyser = null;
+    bar.style.width = '0';
+    btn.textContent = 'শুরু করুন';
+    btn.classList.remove('on');
+    statusEl.textContent = 'বন্ধ আছে।';
+  }
+
+  btn.addEventListener('click', function () { running ? stop() : start(); });
+})();
+</script>
+</body>
+</html>
