@@ -29,6 +29,8 @@
   button#toggle:disabled { opacity: .6; cursor: wait; }
   button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   label { display: flex; justify-content: space-between; font-weight: 600; }
+  label.check { justify-content: flex-start; gap: 10px; align-items: center; }
+  input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
   input[type=range] { width: 100%; height: 36px; accent-color: var(--accent); }
   .meter { height: 14px; border-radius: 7px; background: var(--meter-bg); overflow: hidden; }
   .meter > div { height: 100%; width: 0; background: var(--accent); transition: width .06s linear; }
@@ -50,6 +52,10 @@
       <label><span>ইনপুট লেভেল</span></label>
       <div class="meter" aria-hidden="true"><div id="bar"></div></div>
     </div>
+    <div>
+      <label class="check" for="speakerMode"><input id="speakerMode" type="checkbox"> <span>স্পিকার মোড (ব্লুটুথ স্পিকার)</span></label>
+      <p class="warn" id="speakerTip" hidden>স্পিকার মোডে ফিডব্যাক (বিপ শব্দ) কমাতে ইকো ক্যানসেলেশন চালু থাকে। ফোনটা স্পিকার থেকে দূরে রাখুন, ভলিউম ১x থেকে আস্তে আস্তে বাড়ান। আওয়াজ ফোন থেকে এলে ব্লুটুথ কানেকশনটা আবার দেখুন।</p>
+    </div>
     <p class="warn">অবশ্যই হেডফোন বা ইয়ারফোন ব্যবহার করুন। স্পিকারে চালালে সাউন্ড আবার মাইকে ঢুকে তীব্র বিপ শব্দ (ফিডব্যাক) হবে। ব্লুটুথ হেডফোনে কিছুটা ডিলে হতে পারে।</p>
   </section>
 </main>
@@ -61,8 +67,22 @@
   var gainVal = document.getElementById('gainVal');
   var bar = document.getElementById('bar');
   var statusEl = document.getElementById('status');
+  var speakerMode = document.getElementById('speakerMode');
+  var speakerTip = document.getElementById('speakerTip');
   var ctx = null, stream = null, gainNode = null, analyser = null, raf = 0;
   var running = false, starting = false;
+
+  // স্পিকার মোড মনে রাখা
+  try {
+    if (localStorage.getItem('mic-amp-speaker') === '1') speakerMode.checked = true;
+  } catch (e) {}
+  speakerTip.hidden = !speakerMode.checked;
+  speakerMode.addEventListener('change', function () {
+    try { localStorage.setItem('mic-amp-speaker', speakerMode.checked ? '1' : '0'); } catch (e) {}
+    speakerTip.hidden = !speakerMode.checked;
+    // চালু থাকা অবস্থায় মোড বদলালে নতুন সেটিংসে আবার চালু হবে
+    if (running) { stop(); start(); }
+  });
 
   // ভলিউম মনে রাখা: পেজ রিলোড করলেও আগের ভলিউম থাকবে
   try {
@@ -124,8 +144,11 @@
       return;
     }
     try {
+      // স্পিকার মোডে ইকো ক্যানসেলেশন চালু থাকে, যাতে স্পিকারের আওয়াজ
+      // আবার মাইকে ঢুকে বিপ শব্দ (ফিডব্যাক) না হয়
+      var spk = speakerMode.checked;
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
+        audio: { echoCancellation: spk, noiseSuppression: spk, autoGainControl: false, channelCount: 1 }
       });
     } catch (e) {
       statusEl.textContent = micErrorMessage(e);
